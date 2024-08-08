@@ -1,12 +1,11 @@
 import os
 
-import chromadb
-import chromadb.utils.embedding_functions as embedding_functions
 import requests
+from collection import get_collection
 from dotenv import load_dotenv
 
 
-def fetch_transcripts(email: str):
+def fetch_transcripts(email: str, limit: int = 3):
     # Load the .env file
     load_dotenv()
 
@@ -59,7 +58,7 @@ def fetch_transcripts(email: str):
         """,
         "variables": {
             "participantEmail": email,  # Currently only one email is used
-            "limit": 1,  # Limit to 3 transcripts for testing
+            "limit": limit,  # Limit to 3 transcripts for testing
         },
     }
 
@@ -70,7 +69,7 @@ def fetch_transcripts(email: str):
     return response_json["data"]
 
 
-def transcript_to_document(transcript):
+def transcript_to_documents(transcript) -> list[dict]:
     """Convert a Fireflies transcript to a document for storage in a ChromaDB collection."""
     metadata = {
         "id": transcript["id"],
@@ -80,27 +79,40 @@ def transcript_to_document(transcript):
         "transcript_url": transcript["transcript_url"],
     }
 
+    embedding_character_limit = 8191
+
     content = ""
     for sentence in transcript["sentences"]:
-        content += sentence["speaker_name"] + ": " + sentence["text"] + "\n"
+        content += (
+            (sentence["speaker_name"] or "UNKNOWN SPEAKER:")
+            + ": "
+            + sentence["text"]
+            + "\n"
+        )
+    breakpoint()
+    # Split the string into chunks of the same size
+    content_chunks = [
+        content[i : i + embedding_character_limit]
+        for i in range(0, len(content), embedding_character_limit)
+    ]
+    documents = []
+    for i, content_chunk in enumerate(content_chunks):
+        documents.append(
+            {
+                "id": f"{transcript["id"]}-chunk-{i}",
+                "metadata": metadata,
+                "content": content_chunk,
+            }
+        )
 
-    return {"id": transcript["id"], "metadata": metadata, "content": content}
+    return documents
 
 
 def store_embeddings_in_chroma(
     documents: list[dict],
-    openai_api_key: str,
-    chroma_db_path: str,
-    embedding_model_name: str,
 ):
     """Store embeddings of news article titles and content in a ChromaDB collection."""
-    chroma_client = chromadb.PersistentClient(path=chroma_db_path)
-    openai_ef = embedding_functions.OpenAIEmbeddingFunction(
-        api_key=openai_api_key, model_name=embedding_model_name
-    )
-    collection = chroma_client.get_or_create_collection(
-        "presale_calls", embedding_function=openai_ef
-    )
+    collection = get_collection()
 
     documents_content = [doc["content"] for doc in documents]
     documents_metadata = [doc["metadata"] for doc in documents]
@@ -134,13 +146,10 @@ if __name__ == "__main__":
         print(f"Fetching transcripts for {email}...")
         payload = fetch_transcripts(email)
         for transcript in payload["transcripts"]:
-            documents.append(transcript_to_document(transcript))
+            documents.extend(transcript_to_documents(transcript))
 
     # Store the fetched transcripts in a ChromaDB collection
-    print("Storing transcripts in ChromaDB...")
+    print(f"Storing {len(documents)} transcripts in ChromaDB...")
     store_embeddings_in_chroma(
         documents=documents,
-        openai_api_key=os.getenv("OPENAI_API_KEY"),
-        chroma_db_path="presales_chromadb",
-        embedding_model_name="text-embedding-3-small",
     )
