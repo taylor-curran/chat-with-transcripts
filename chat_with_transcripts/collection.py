@@ -10,7 +10,7 @@ import chromadb.utils.embedding_functions as embedding_functions
 CHROMA_DB_PATH = (
     "/Users/taylorcurran/Documents/tay/chat-with-transcripts/presales_chromadb"
 )
-EMBEDDING_MODEL_NAME = "text-embedding-3-small"
+EMBEDDING_MODEL_NAME = "text-embedding-3-large"
 
 
 def get_collection():

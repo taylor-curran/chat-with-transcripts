@@ -5,7 +5,7 @@ from collection import get_collection
 from dotenv import load_dotenv
 
 
-def fetch_transcripts(email: str, limit: int = 3):
+def fetch_transcripts(email: str, limit: int = 50):
     # Load the .env file
     load_dotenv()
 
@@ -71,25 +71,41 @@ def fetch_transcripts(email: str, limit: int = 3):
 
 def transcript_to_documents(transcript) -> list[dict]:
     """Convert a Fireflies transcript to a document for storage in a ChromaDB collection."""
+
+    internal_only = all(
+        [email.endswith("@prefect.io") for email in transcript["participants"]]
+    )
+
     metadata = {
         "id": transcript["id"],
         "title": transcript["title"],
         "participants": ",".join(transcript["participants"]),
         "dateString": transcript["dateString"],
         "transcript_url": transcript["transcript_url"],
+        "is_internal": internal_only,
     }
 
-    embedding_character_limit = 8191
+    # 8191 is the maximum token limit for OpenAI API
+    # tokens are about 4 words
+    embedding_character_limit = 8191 * 2
+
+    prefect_speakers = [
+        "Darren Pinder",
+        "Taylor Curran",
+        "Bianca Hoch",
+        "Bionca Htun",
+        "Mihir Thatte",
+        "Mitchell Bradley",
+        "Shane Nordstrand",
+        "Emil Christensen",
+    ]
 
     content = ""
-    for sentence in transcript["sentences"]:
-        content += (
-            (sentence["speaker_name"] or "UNKNOWN SPEAKER:")
-            + ": "
-            + sentence["text"]
-            + "\n"
-        )
-    breakpoint()
+    for sentence in transcript["sentences"] or []:
+        speaker = sentence["speaker_name"] or "UNKNOWN SPEAKER:"
+        if speaker in prefect_speakers:
+            speaker += " (Prefect)"
+        content += speaker + ": " + sentence["text"] + "\n"
     # Split the string into chunks of the same size
     content_chunks = [
         content[i : i + embedding_character_limit]
@@ -114,15 +130,22 @@ def store_embeddings_in_chroma(
     """Store embeddings of news article titles and content in a ChromaDB collection."""
     collection = get_collection()
 
-    documents_content = [doc["content"] for doc in documents]
-    documents_metadata = [doc["metadata"] for doc in documents]
-    documents_ids = [doc["id"] for doc in documents]
+    seen_ids = set()
+    documents_content = []
+    documents_metadata = []
+    documents_ids = []
+    for doc in documents:
+        if doc["id"] in seen_ids:
+            print(f"Already saw document with id {doc['id']}. Skipping.")
+            continue
+        documents_content.append(doc["content"])
+        documents_ids.append(doc["id"])
+        documents_metadata.append(doc["metadata"])
+        seen_ids.add(doc["id"])
 
     collection.add(
         documents=documents_content, metadatas=documents_metadata, ids=documents_ids
     )
-    print("------------------- peek -------------------")
-    print(collection.peek(1))
     print("------------------- count -------------------")
     print(collection.count())
 
@@ -132,10 +155,10 @@ if __name__ == "__main__":
     participant_emails_to_filter = [
         # "taylor.curran@prefect.io",  # Taylor Curran
         "shane@prefect.io",  # Shane Nordstrand
-        # "mitchell.bradley@prefect.io",  # Mitchell Bradley
+        "mitchell.bradley@prefect.io",  # Mitchell Bradley
         # "darren.pinder@prefect.io",  # Darren Pinder
         # "bianca.hoch@prefect.io",  # Bianca Hoch
-        # "bionca.htun@prefect.io",  # Bionca Htun
+        "bionca@prefect.io",  # Bionca Htun
         # "mihir.thatte@prefect.io",  # Mihir Thatte
     ]
 
@@ -145,6 +168,7 @@ if __name__ == "__main__":
     for email in participant_emails_to_filter:
         print(f"Fetching transcripts for {email}...")
         payload = fetch_transcripts(email)
+        print(f"Found {len(payload['transcripts'])} transcripts. Processing...")
         for transcript in payload["transcripts"]:
             documents.extend(transcript_to_documents(transcript))
 
